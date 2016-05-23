@@ -129,7 +129,7 @@ tagp = ':[0-9]{2}[A-Z]:'
 fsetalphanum = "[A-Z0-9]+"
 fsetalpha = "[A-Z]+"
 setx = "[A-Za-z0-9\/-?:(.,)'+]"
-fbic = "[A-Z]{4}[A-Z]{2}[A-Z0-9]{2}([A-Z0-9]{3}?"
+fbic = "[A-Z]{4}[A-Z]{2}[A-Z0-9]{2}([A-Z0-9]{3})?"
 fdate = '(?P<date>(?P<year>\d{4})(?P<month>\d{2})(?P<day>\d{2}))'
 fdate1 = '(?P<date1>(?P<year1>\d{4})(?P<month1>\d{2})(?P<day1>\d{2}))'
 ftime = '(?P<time>(?P<hour>\d{2})(?P<min>\d{2})(?P<sec>\d{2}))'
@@ -154,6 +154,10 @@ def alphanumFixed(size):
 def num(size):
     """ Return a Regex for numbers of length equal or less to a given size """
     return '\d{1,%s}' % (size)
+
+def decimal(size):
+    """ Return a Regex for decimal numbers of length equal or less to a given size """
+    return r'\d{1,%s},\d*'%size
 
 def fsetx(size):
     """ Return a Regex for setx of length equal or less to a given size """
@@ -895,7 +899,7 @@ def readBalance(lines):
         if tag_num == TAG_NUMBER:
             if opt in OPTIONS:
                 regex = "^:(?P<qualifier>%s)/(?P<dss>%s)?/(?P<type>%s)/(?P<sign>N)?%s$"%(alphanumFixed(4), 
-                    alphanum(8), alphanumFixed(4), num(15))
+                    alphanum(8), alphanumFixed(4), decimal(15))
                 m1 = re.match(regex, rest)
                 if m1: # check field format
                     qualifier, dss, typ = m1.group('qualifier'), m1.group('dss'), m1.group('type') 
@@ -921,6 +925,313 @@ def readBalance(lines):
             
     else:  #  not a valid swift's field format
         raise ParsingException(buildErrMsg(0, num_line))
+
+def readQuantityFI(lines):
+    """ Read Quantity of Financial Instrument (Mandatory Field) """
+    (num_line, field) = lines[0]
+    FIELD_NAME = "Quantity of Financial Instrument: Posting Quantity"
+    TAG_NUMBER = '36'
+    OPTIONS = ['B']
+    VALID_TAGS = list(map(lambda x: ':%s%s:'%(TAG_NUMBER, x), OPTIONS))
+    # catch tag and the rest of field
+    m = re.match('^(?P<tag>%s):(?P<rest>.+)$'% (tagp), field)
+    if m:
+        tag_num, opt, rest  = m.group('tag')[1:3], m.group('tag')[3], m.group('rest')
+        if tag_num == TAG_NUMBER: # check field tag
+            if opt in OPTIONS: # check field option
+                regex = r"^(?P<qualifier>%s)//(?P<type>%s)/(?P<quantity>%s)$"%(alphanumFixed(4), alphanumFixed(4), decimal(15))
+                m1 = re.match(regex, rest)
+                if m1:
+                    qualifier, dss, typ = m1.group('qualifier'), m1.group('type'), m1.group('type')
+                    if qualifier == 'PSTA': # check qualifier
+                        if dss in ['AMOR', 'FAMT', 'UNIT']:
+                            lines.pop(0) # all ok
+                        else:
+                            raise ParsingException(buildErrMsg(9, num_line, field_name=FIELD_NAME,
+                                                       qualifier_value=qualifier, subfield_name="Quantity Type Code",
+                                                       subfield_value=",".join(['AMOR', 'FAMT', 'UNIT'])))
+
+                    else:
+                        raise ParsingException(buildErrMsg(4, num_line,
+                                                            field_name=FIELD_NAME, value="PSTA"))
+                else: # subfields format not correct
+                    raise ParsingException(buildErrMsg(
+                        7, num_line, field_name=FIELD_NAME, option="B", pattern=":4!c//4!c/15d"))
+
+            else: # not a valid option for this field
+                raise ParsingException(buildErrMsg(11, num_line, tag=', '.join(VALID_TAGS)))
+
+        else: # wrong tag code, mandatory
+            raise ParsingException(buildErrMsg(1, num_line, tag=':36B:'))
+
+    else: #  not a valid swift's field format
+        raise ParsingException(buildErrMsg(0, num_line))
+
+def readIndicator2(lines):
+    """ Read Transaction Details Indicator  (Mandatory Field)"""
+    (num_line, field) = lines[0]
+    FIELD_NAME = "Indicator"
+    TAG_NUMBER = '22'
+    OPTIONS = ['F', 'H']
+    VALID_TAGS = list(map(lambda x: ':%s%s:'%(TAG_NUMBER, x), OPTIONS))
+    m = re.match('^(?P<tag>%s):(?P<rest>.+)$'% (tagp), field)
+    if m: 
+        tag_num, opt, rest  = m.group('tag')[1:3], m.group('tag')[3], m.group('rest') 
+        if tag_num == TAG_NUMBER:
+            
+            if opt == 'F':
+                regex = "^(?P<qualifier>%s)/(?P<dss>%s)?/(?P<indicator>%s)$"%(alphanumFixed(4), 
+                    alphanum(8), alphanumFixed(4))                
+                m1 = re.match(regex, rest)
+                if m1:
+                    lines.pop(0) # all ok
+
+                else: # subfields format not correct
+                    raise ParsingException(buildErrMsg(
+                        7, num_line, field_name=FIELD_NAME, option="F", pattern=":4!c/[8c]/4!c"))
+
+            elif opt == 'H':
+
+                regex = "^(?P<qualifier>%s)//(?P<indicator>%s)$"%(alphanumFixed(4),alphanumFixed(4))
+                m1 = re.match(regex, rest)
+                if m1: # check field format
+                    lines.pop(0) # all ok
+
+                else: # subfields format not correct
+                    raise ParsingException(buildErrMsg(
+                        7, num_line, field_name=FIELD_NAME, option="H", pattern=":4!c//4!c"))
+
+
+            else: # not a valid option for this field
+                raise ParsingException(buildErrMsg(11, num_line, tag=', '.join(VALID_TAGS)))
+        else:
+            # wrong tag code, mandatory
+            raise ParsingException(buildErrMsg(1, num_line, tag=':22a:'))
+            
+    else:  #  not a valid swift's field format
+        raise ParsingException(buildErrMsg(0, num_line))
+
+
+def readTransactionDetailsDate(lines):
+    """ Read Transaction Details Indicator  (Mandatory Field)"""
+    (num_line, field) = lines[0]
+    FIELD_NAME = "Transaction Detail Date"
+    TAG_NUMBER = '98'
+    OPTIONS = ['A', 'B', 'C']
+    VALID_TAGS = list(map(lambda x: ':%s%s:'%(TAG_NUMBER, x), OPTIONS))
+    m = re.match('^(?P<tag>%s):(?P<rest>.+)$'% (tagp), field)
+    if m: 
+        tag_num, opt, rest  = m.group('tag')[1:3], m.group('tag')[3], m.group('rest') 
+        if tag_num == TAG_NUMBER:
+            
+            if opt == 'A':
+                regex = "^(?P<qualifier>%s)//%s$"%(alphanumFixed(4), fdate)                
+                m1 = re.match(regex, rest)
+
+                if m1:
+                    if not isCorrectDate(m1.group('date')):
+                        raise ParsingException(buildErrMsg(8, num_line,
+                                                            field_name=FIELD_NAME, subfield_name="date",
+                                                            pattern="YYYYMMDD"))
+                    else:
+
+                        lines.pop(0) # all ok
+
+                else: # subfields format not correct
+                    raise ParsingException(buildErrMsg(
+                        7, num_line, field_name=FIELD_NAME, option="A", pattern=":4!c//8!n"))
+
+            elif opt == 'B':
+                regex = "^(?P<qualifier>%s)/(?P<dss>%s)?/(?P<code>%s)$"%(alphanumFixed(4),alphanum(8), alphanumFixed(4))
+                m1 = re.match(regex, rest)
+                if m1: # check field format
+
+                    lines.pop(0) # all ok
+
+                else: # subfields format not correct
+                    raise ParsingException(buildErrMsg(
+                        7, num_line, field_name=FIELD_NAME, option="H", pattern=":4!c/[8c]/4!c"))
+
+            elif opt == 'C':
+                regex = "^(?P<qualifier>%s)//%s%s$"%(alphanumFixed(4), fdate, ftime)                
+                m1 = re.match(regex, rest)
+                if m1:
+                    if not isCorrectDate(m1.group('date')):
+                        raise ParsingException(buildErrMsg(8, num_line,
+                                                            field_name=FIELD_NAME, subfield_name="date",
+                                                            pattern="YYYYMMDD"))
+                    elif not isCorrectTime(m1.group('time')):
+                        raise ParsingException(buildErrMsg(8, num_line,
+                                                           field_name=FIELD_NAME, subfield_name="time", pattern="HHMMSS"))
+                    lines.pop(0) # all ok
+
+                else: # subfields format not correct
+                    raise ParsingException(buildErrMsg(
+                        7, num_line, field_name=FIELD_NAME, option="C", pattern=":4!c//8!n6!n"))
+
+
+            else: # not a valid option for this field
+                raise ParsingException(buildErrMsg(11, num_line, tag=', '.join(VALID_TAGS)))
+        else:
+            # wrong tag code, mandatory
+            raise ParsingException(buildErrMsg(1, num_line, tag=':98a:'))
+            
+    else:  #  not a valid swift's field format
+        raise ParsingException(buildErrMsg(0, num_line))
+
+def readTransactionDetailsParty(lines):
+    """ Read Transaction Details Party  (Mandatory Field)"""
+    (num_line, field) = lines[0]
+    FIELD_NAME = "Party"
+    TAG_NUMBER = '95'
+    OPTIONS = ['C', 'P', 'Q', 'R']
+    QUALIFIERS = ['BUYR', 'DEAG', 'DECU', 'DEI1', 'DEI2', 'PSET', 'REAG', 'RECU', 'REI1', 'REI2', 'SELL']
+    VALID_TAGS = list(map(lambda x: ':%s%s:'%(TAG_NUMBER, x), OPTIONS))
+    m = re.match('^(?P<tag>%s):(?P<rest>.+)$'% (tagp), field)
+    if m: 
+        tag_num, opt, rest  = m.group('tag')[1:3], m.group('tag')[3], m.group('rest') 
+        if tag_num == TAG_NUMBER:        
+            if opt == 'C':
+                regex = "^(?P<qualifier>%s)//%s$"%(alphanumFixed(4), alphaFixed(2))                
+                m1 = re.match(regex, rest)
+                if m1:
+
+                    qualifier =  m1.group('qualifier')
+                    if qualifier in QUALIFIERS:
+                        lines.pop(0) # all ok
+                    else:
+                        raise ParsingException(buildErrMsg(4, num_line,
+                                                            field_name=FIELD_NAME, value=",".join(QUALIFIERS)))
+
+
+                else: # subfields format not correct
+                    raise ParsingException(buildErrMsg(
+                        7, num_line, field_name=FIELD_NAME, option="C", pattern=":4!c//2!a"))
+            elif opt == 'P':
+                regex = "^(?P<qualifier>%s)//%s$"%(alphanumFixed(4), fbic)                
+                m1 = re.match(regex, rest)
+                if m1:
+                    qualifier =  m1.group('qualifier')
+                    if qualifier in QUALIFIERS:
+                        lines.pop(0) # all ok
+                    else:
+                        raise ParsingException(buildErrMsg(4, num_line,
+                                                            field_name=FIELD_NAME, value=",".join(QUALIFIERS)))
+                   
+                else: # subfields format not correct
+                    raise ParsingException(buildErrMsg(
+                        7, num_line, field_name=FIELD_NAME, option="P", pattern=":4!c//4!a2!a2!c[3!c]"))
+
+            elif opt == 'R':
+                regex = "^(?P<qualifier>%s)/(?P<dss>%s)?/(?P<code>%s)$"%(alphanumFixed(4),alphanum(8), fsetx(34))
+                m1 = re.match(regex, rest)
+                if m1: # check field format
+                    qualifier =  m1.group('qualifier')
+                    if qualifier in QUALIFIERS:
+                        lines.pop(0) # all ok
+                    else:
+                        raise ParsingException(buildErrMsg(4, num_line,
+                                                            field_name=FIELD_NAME, value=",".join(QUALIFIERS)))
+                else: # subfields format not correct
+                    raise ParsingException(buildErrMsg(
+                        7, num_line, field_name=FIELD_NAME, option="R", pattern=":4!c/[8c]/4!c"))
+
+            elif opt == 'Q':
+                regex = "^(?P<qualifier>%s)//(?P<address>%s)$"%(alphanumFixed(4), fsetx(35))                
+                m1 = re.match(regex, rest)
+                if m1:
+                    qualifier, address =  m1.group('qualifier'), m1.group('address'),
+                    if qualifier not in QUALIFIERS:
+                        raise ParsingException(buildErrMsg(4, num_line,
+                                                            field_name=FIELD_NAME, value=",".join(QUALIFIERS)))
+                    # parse address
+                    if not isSwiftFieldFormatValid(address):
+                        lines.pop(0) 
+                        (num_line, field) = lines[0]
+                        if not isSwiftFieldFormatValid(field) and isSetX(field, 35):
+
+                            lines.pop(0)
+                            (num_line, field) = lines[0]
+                            if not isSwiftFieldFormatValid(field) and isSetX(field, 35):
+                                lines.pop(0)
+                                (num_line, field) = lines[0]
+                                if not isSwiftFieldFormatValid(field) and isSetX(field, 35):
+                                    lines.pop(0)
+                    else:
+                        raise ParsingException(buildErrMsg(7, num_line,
+                                                       field_name=FIELD_NAME, option="Q", pattern=":4!c//4*35x"))
+
+
+                else: # subfields format not correct
+                    raise ParsingException(buildErrMsg(
+                        7, num_line, field_name=FIELD_NAME, option="Q", pattern=":4!c//4*35x6!n"))
+
+
+            else: # not a valid option for this field
+                raise ParsingException(buildErrMsg(11, num_line, tag=', '.join(VALID_TAGS)))
+        else:
+            # wrong tag code, mandatory
+            raise ParsingException(buildErrMsg(1, num_line, tag=':98a:'))
+            
+    else:  #  not a valid swift's field format
+        raise ParsingException(buildErrMsg(0, num_line))
+
+
+def readPartyReference(lines):
+    """ Read Message's sender Reference """
+    FIELD_NAME = "Processing Reference"
+    (num_line, field) = lines[0]
+    m = re.match('^(%s):(%s)\/\/(.*)$' % (tagp, fsetalphanum), field)
+    if m is not None:
+        if m.group(1) != ':20C:':
+            raise ParsingException(buildErrMsg(1, num_line, tag=':20C:'))
+        elif m.group(2) != 'PROC':
+            raise ParsingException(buildErrMsg(
+                4, num_line, field_name=FIELD_NAME, value='\'PROC\''))
+        elif re.match(fsetx(16), m.group(3)) is None:
+            raise ParsingException(buildErrMsg(5, num_line))
+        lines.pop(0)
+    else:
+        raise ParsingException(buildErrMsg(0, num_line))
+
+def readAmount(lines):
+    """ Amount (Mandatory Field) """
+    (num_line, field) = lines[0]
+    FIELD_NAME = "Amount"
+    TAG_NUMBER = '19'
+    OPTIONS = ['A']
+    QUALIFIERS = ['PSTA', 'ACRU']
+    VALID_TAGS = list(map(lambda x: ':%s%s:'%(TAG_NUMBER, x), OPTIONS))
+    # catch tag and the rest of field
+    m = re.match('^(?P<tag>%s):(?P<rest>.+)$'% (tagp), field)
+    if m:
+        tag_num, opt, rest  = m.group('tag')[1:3], m.group('tag')[3], m.group('rest')
+        if tag_num == TAG_NUMBER: # check field tag
+            if opt in OPTIONS: # check field option
+                regex = r"^(?P<qualifier>%s)//(?P<sign>N)?(?P<code>%s)(?P<amount>%s)$"%(alphanumFixed(4), alphaFixed(3), decimal(15))
+                m1 = re.match(regex, rest)
+                if m1:
+                    qualifier, code, amount = m1.group('qualifier'), m1.group('code'), m1.group('amount')
+                    if qualifier in QUALIFIERS: # check qualifier
+                            lines.pop(0) # all ok
+
+                    else:
+                        raise ParsingException(buildErrMsg(4, num_line,
+                                                            field_name=FIELD_NAME, value=",".join(QUALIFIERS)))
+                else: # subfields format not correct
+                    raise ParsingException(buildErrMsg(
+                        7, num_line, field_name=FIELD_NAME, option="A", pattern=":4!c//[N]3!a15d"))
+
+            else: # not a valid option for this field
+                raise ParsingException(buildErrMsg(11, num_line, tag=', '.join(VALID_TAGS)))
+
+        else: # wrong tag code
+            raise ParsingException(buildErrMsg(1, num_line, tag=':19A:'))
+
+    else: #  not a valid swift's field format
+        raise ParsingException(buildErrMsg(0, num_line))
+
+
 
 
 def parseBlockA(lines):
@@ -988,6 +1299,7 @@ def parseBlocksB1a(lines): # Mandatory Repetitive sequence
     while True:
         readStartOfBlock(lines, 'TRAN')
         parseBlocksB1a1(lines)
+        parseBlockB1a2(lines)
         readEndOfBlock(lines, 'TRAN')
         if re.match(r':16R:TRAN', lines[0][1]) is None:
             break
@@ -1001,6 +1313,64 @@ def parseBlocksB1a1(lines):
         if re.match(r':16R:LINK', lines[0][1]) is None:
             break
 
+def parseBlockB1a2(lines):
+    """ Parsing Transaction Details Block """
+    readStartOfBlock(lines, 'TRANSDET')
+
+    ### Quantity Mandatory repetitive fields
+    while True: 
+        readQuantityFI(lines)
+        if re.search(r':36B:', lines[0][1]) is None:
+            break
+    ### Amount Field(Optional Repetitive)
+    if re.search(r':19A::PSTA/', lines[0][1]):
+        readAmount(lines)
+    if re.search(r':19A::ACRU/', lines[0][1]):
+        readAmount(lines)
+
+    ### Indicator repetitive fields (Mandatories)   
+    if not re.search(r':22F::TRAN/', lines[0][1]):
+        raise ParsingException(buildErrMsg(10, lines[0][0], field_name='Indicator',
+                                                           qualifier_value='TRAN'))
+    readIndicator2(lines)
+    if not re.search(r':22H::REDE/', lines[0][1]):
+        raise ParsingException(buildErrMsg(10, lines[0][0], field_name="Indicator",
+                                                           qualifier_value='REDE'))
+    readIndicator2(lines)
+    if not re.search(r':22H::PAYM/', lines[0][1]):
+        raise ParsingException(buildErrMsg(10, lines[0][0], field_name="Indicator",
+                                                           qualifier_value='PAYM'))
+    readIndicator2(lines)
+    while re.search(r':22[A-Z]:', lines[0][1]): # mandatory repetitive field
+        readIndicator2(lines)
+
+    ### Date time fields (Mandatory Repetitive)
+    if not re.search(r':98[A-B]::ESET/', lines[0][1]):
+        raise ParsingException(buildErrMsg(10, lines[0][0], field_name='DATE/TIME',
+                                            qualifier_value='ESET'))
+    readTransactionDetailsDate(lines)
+
+    while re.search(r':98[A-Z]:', lines[0][1]): # mandatory repetitive field
+        readTransactionDetailsDate(lines)
+
+    readBlocksB1a2A(lines)
+        
+    readEndOfBlock(lines, 'TRANSDET')
+
+
+def readBlocksB1a2A(lines):
+    (num_line, field) = lines[0]
+    while(':16R:SETPRTY' == field):
+        readStartOfBlock(lines, 'SETPRTY')
+        readTransactionDetailsParty(lines)
+        (num_line, field) = lines[0]
+        if re.search(':97[A-Z]:', field): # check if safe account is included
+            readSafeAccount(lines)
+        (num_line, field) = lines[0]
+        if re.search(r':20[A-Z]:', field): # check if reference is included
+            readPartyReference(lines)
+        readEndOfBlock(lines, 'SETPRTY')
+        (num_line, field) = lines[0]
 
 
 # end of main wrapper definition
