@@ -1317,11 +1317,21 @@ def parseBlockB1a2(lines):
     """ Parsing Transaction Details Block """
     readStartOfBlock(lines, 'TRANSDET')
 
+    # ignore Place Optional Repetitive Field
+    while re.search(r':94[BCFH]:', lines[0][1]): 
+        lines.pop(0)
+       
+
     ### Quantity Mandatory repetitive fields
     while True: 
         readQuantityFI(lines)
         if re.search(r':36B:', lines[0][1]) is None:
             break
+
+    # Ignore Number of Days Accrued Field (Optional)
+    if re.search(r':99A::DAAC/', lines[0][1]):
+        lines.pop(0)
+
     ### Amount Field(Optional Repetitive)
     if re.search(r':19A::PSTA/', lines[0][1]):
         readAmount(lines)
@@ -1353,6 +1363,13 @@ def parseBlockB1a2(lines):
     while re.search(r':98[A-Z]:', lines[0][1]): # mandatory repetitive field
         readTransactionDetailsDate(lines)
 
+    # ignore fields until start of B1a2A block
+    # or end of TRANSDET BLOCK
+    while True: 
+        if re.search(r':16R:SETPRTY', lines[0][1]) or re.search(r':16S:TRANSDET', lines[0][1]):
+            break
+        lines.pop(0)
+
     readBlocksB1a2A(lines)
         
     readEndOfBlock(lines, 'TRANSDET')
@@ -1372,18 +1389,15 @@ def readBlocksB1a2A(lines):
         readEndOfBlock(lines, 'SETPRTY')
         (num_line, field) = lines[0]
 
-
-# end of main wrapper definition
-
 ### Execute ###
 if __name__ == '__main__':
     PATH = 'in.txt'
     with open(PATH, 'r') as F:
-        # get message line by line stripping the breaklines and empty lines
-        MT536 = [l.strip('\n')
-                 for l in [li for li in F.readlines() if not len(li) < 2]]
+        # get message line by line 
         # enumerate lines so we can have the line numbers too
-        MT536 = list(enumerate(MT536, start=1))
+        MT536 = list(filter(lambda par: len(par[1]) > 1, list(enumerate(F.readlines(), start=1))))
+        # stripping the breaklines and empty lines
+        MT536 = list(map(lambda x: (x[0], x[1].strip("\n ")), MT536))
     try:
         parseBlockA(MT536)
         parseBlocksB(MT536)
