@@ -226,14 +226,14 @@ def is_alphanum(word, size):
 
 def is_setx(word, size):
     """ Given a word and a size value, Returns True if the word belongs to set x
-    with a length less or equal to the given size """
+    with a length less or equal to a given size """
     return re.match(fsetx(size), word)
 
 _IS_EOF = lambda lines: len(lines) == 0
 
 
 class MT536Parser():
-    """ Class that encapsulates all the MT536 parsing functionality """
+    """ Class that encapsulates the MT536 parsing functionality """
 
     def __init__(self, path, lang=0):
         """ Constructor """
@@ -250,14 +250,16 @@ class MT536Parser():
             _mt536 = [(x[0], x[1].strip("\n ")) for x in list(
                 enumerate(_file.readlines(), start=1)) if len(x[1]) > 1]
         try:
-            self._parse_block_a(_mt536)
+            result = {} # structure where all relevant info will be stored
+            self._parse_block_a(_mt536, result)
             self._parse_blocks_b(_mt536)
             self._read_blocks_c(_mt536)
         except ParsingError as error:
             print(error)
         except IndexError:
             print("Error de sintaxis. Fin inesperado del mensaje.")
-        print(_mt536)
+        print("Remaining:\n%s"%_mt536)
+        print("Result:\n%s"%result)
 
     def _read_page_number_indicator(self, lines):
         """ Reading number of pages containing the message """
@@ -295,7 +297,7 @@ class MT536Parser():
             else:
                 raise ParsingError(_build_err_msg(0, num_line, self._language))
 
-    def _read_seme(self, lines):
+    def _read_seme(self, lines, out):
         """ Read Message's sender Reference """
         field_name = "Sender's Message Reference"
         (num_line, field) = lines[0]
@@ -310,6 +312,9 @@ class MT536Parser():
                     4, num_line, self._language, field_name=field_name, value='\'SEME\''))
             elif re.match(fsetx(16), mtch.group(3)) is None:
                 raise ParsingError(_build_err_msg(5, num_line, self._language))
+            # add seme to structure
+            out["seme"] = mtch.group(3) 
+            # all ok, pass line
             lines.pop(0)
         else:
             raise ParsingError(_build_err_msg(0, num_line, self._language))
@@ -346,7 +351,7 @@ class MT536Parser():
                     raise ParsingError(_build_err_msg(
                         4, num_line, self._language, value='\'PREP\''))
                 if mtch.group(1) == ":98A:":  # Checking format A
-                    mtch = re.match('^%s$' % (R_FDATE),  mtch.group(3))
+                    mtch = re.match('^%s$' % (R_FDATE), mtch.group(3))
                     if mtch is not None:
                         if not is_correct_date(mtch.group(0)):
                             raise ParsingError(_build_err_msg(8, num_line, self._language,
@@ -392,7 +397,7 @@ class MT536Parser():
             else:
                 raise ParsingError(_build_err_msg(0, num_line, self._language))
 
-    def _read_statement_period(self, lines):
+    def _read_statement_period(self, lines, out):
         """ Read Preparation of the message """
         field_name = "Statement Period"
         (num_line, field) = lines[0]
@@ -403,22 +408,24 @@ class MT536Parser():
                 raise ParsingError(_build_err_msg(
                     4, num_line, self._language, value='\'STAT\''))
             if mtch.group(1) == ':69A:':  # Checking Option A format
-                mtch = re.match('^(%s)\/(%s)$' %
-                                (R_FDATE, R_FDATE1),  mtch.group(3))
+                mtch = re.match(r'^(%s)/(%s)$' %
+                                (R_FDATE, R_FDATE1), mtch.group(3))
                 if mtch is not None:
                     if not (is_correct_date(mtch.group('date')) and is_correct_date(mtch.group('date1'))):
                         raise ParsingError(_build_err_msg(8, num_line, self._language,
-                                                       field_name=field_name, subfield_name="date",
-                                                       pattern="YYYYMMDD"))
+                                                            field_name=field_name, subfield_name="date",
+                                                            pattern="YYYYMMDD"))
                     else:
+                        # Store dates
+                        out["statement_period"] = {"from": mtch.group('date'), "to": mtch.group('date1')}
                         lines.pop(0)
                 else:
                     raise ParsingError(_build_err_msg(7, num_line, self._language,
                                                    field_name=field_name, option="A", pattern=":4!c//8!n/8!n"))
 
             elif mtch.group(1) == ':69B:':  # Checking Option B format
-                mtch = re.match('^(%s)(%s)\/(%s)(%s)$' %
-                                (R_FDATE, R_FTIME, R_FDATE1, R_FTIME1),  mtch.group(3))
+                mtch = re.match(r'^(%s)(%s)/(%s)(%s)$' %
+                                (R_FDATE, R_FTIME, R_FDATE1, R_FTIME1), mtch.group(3))
                 if mtch is not None:
                     if not (is_correct_date(mtch.group('date')) and is_correct_date(mtch.group('date1'))):
                         raise ParsingError(_build_err_msg(8, num_line, self._language,
@@ -426,9 +433,11 @@ class MT536Parser():
                                                        pattern="YYYYMMDD"))
                     elif not (is_correct_time(mtch.group('time')) and is_correct_time(mtch.group('time1'))):
                         raise ParsingError(_build_err_msg(8, num_line, self._language,
-                                                       field_name=field_name, subfield_name="time",
-                                                       pattern="HHMMSS"))
+                                                    field_name=field_name, subfield_name="time",
+                                                    pattern="HHMMSS"))
                     else:
+                        # Store dates
+                        out["statement_period"] = {"from": mtch.group('date')+mtch.group('time'), "to": mtch.group('date1')+mtch.group('time')}
                         lines.pop(0)
                 else:
                     raise ParsingError(_build_err_msg(
@@ -440,7 +449,7 @@ class MT536Parser():
         else:
             raise ParsingError(_build_err_msg(0, num_line, self._language))
 
-    def _read_indicator1(self, lines):
+    def _read_indicator1(self, lines, out):
         """ Read Function of the Message """
         field_name = "Indicator"
         (num_line, field) = lines[0]
@@ -464,9 +473,11 @@ class MT536Parser():
                                                        qualifier_value=qualifier, subfield_name="indicator",
                                                        subfield_value=",".join(indicator_values)))
                     else:
-                        # advance the line until mandatory 22F field with qualifier
-                        # STBA
+                        
+                        # store Frequency
+                        out["frequency"] = indicator
                         lines.pop(0)
+                        # advance the line until mandatory 22F field with qualifier STBA
                         (num_line, field) = lines[0]
                         if '22F' in field:
                             mtch = re.match(pattern, field)
@@ -596,22 +607,28 @@ class MT536Parser():
         else:
             raise ParsingError(_build_err_msg(0, num_line, self._language))
 
-    def _read_account_owner(self, lines):
+    def _read_account_owner(self, lines, out):
         """ Read the number of the Owner's Account (Optional Field)"""
         field_name = "Party: Account Number"
         (num_line, field) = lines[0]
         if ":95P:" in field:  # option P
-            mtch = re.match('^(%s):ACOW\/\/(?P<code>%s)$' %
+            mtch = re.match(r'^(%s):ACOW//(?P<code>%s)$' %
                             (R_TAG_P, R_FSET_BIC), field)
-            if not mtch is None:
+            if mtch:
+                # store account number
+                out['account_owner'] = {"code": mtch.group('code')}
+                # all ok, pass line
                 lines.pop(0)
             else:
                 raise ParsingError(_build_err_msg(7, num_line, self._language,
-                                               field_name=field_name, option="P", pattern=":ACOW//4!a2!a2!c[3!c]"))
+                                            field_name=field_name, option="P", pattern=":ACOW//4!a2!a2!c[3!c]"))
         elif ":95R:" in field:  # option R
-            mtch = re.match('^(%s):ACOW\/(?P<dss>%s)\/(?P<code>%s)$' % (R_TAG_P, alphanum(8),
+            mtch = re.match(r'^(%s):ACOW/(?P<dss>%s)/(?P<code>%s)$' % (R_TAG_P, alphanum(8),
                                                                         fsetx(34)), field)
-            if not mtch is None:
+            if mtch:
+                # store account number
+                out['account_owner'] = {"code": mtch.group('code'), "dss": mtch.group('dss')}
+                # all ok, pass line
                 lines.pop(0)
             else:
                 raise ParsingError(_build_err_msg(7, num_line, self._language,
@@ -1316,18 +1333,18 @@ class MT536Parser():
         else:  # not a valid swift's field format
             raise ParsingError(_build_err_msg(0, num_line, self._language))
 
-    def _parse_block_a(self, lines):
+    def _parse_block_a(self, lines, out):
         """ Swift's MT536 message BlockA parsing """
         self._read_start_of_block(lines, 'GENL')
         self._read_page_number_indicator(lines)
         self._read_statement_number(lines)
-        self._read_seme(lines)
+        self._read_seme(lines, out)
         self._read_message_function(lines)
         self._read_preparation_date_time(lines)
-        self._read_statement_period(lines)
-        self._read_indicator1(lines)
+        self._read_statement_period(lines, out)
+        self._read_indicator1(lines, out)
         self._read_blocks_a1(lines)
-        self._read_account_owner(lines)
+        self._read_account_owner(lines, out)
         self._read_safe_account(lines)
         self._read_flags_block_A(lines)
         self._read_end_of_block(lines, 'GENL')
@@ -1353,7 +1370,7 @@ class MT536Parser():
     def _parse_block_b(self, lines):
         """ Swift's MT536 message BlocksB parsing """
         self._read_start_of_block(lines, 'SUBSAFE')
-        self._read_account_owner(lines)
+        self._read_account_owner(lines, {})
         self._read_safe_account_block_B(lines)
         self._read_place_of_safekeeping(lines)
         self._read_activity_flag(lines)
