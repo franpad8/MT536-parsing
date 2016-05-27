@@ -245,6 +245,7 @@ class MT536Parser():
 
     def parse(self):
         """ Run the parser """
+        no_errors = True
         # build the file path
         with open(self._path, 'r') as _file:
             # get message line by line
@@ -258,12 +259,20 @@ class MT536Parser():
             result.update(self._parse_blocks_b(_mt536))
             self._read_blocks_c(_mt536)
         except ParsingError as error:
-            print(error)
+            no_errors = False
+            msg = error.__str__()
         except IndexError:
-            print("Error de sintaxis. Fin inesperado del mensaje.")
-        print("Remaining:\n%s"%_mt536)
-        print("Result:")
-        print(pprint.pprint(result))
+            no_errors = False
+            msg = "Error de sintaxis. Fin inesperado del mensaje."
+
+        if no_errors:
+            return (True, result)
+        else:
+            return (False, msg)
+
+        # print("Remaining:\n%s"%_mt536)
+        # print("Result:")
+        
 
     def _read_page_number_indicator(self, lines):
         """ Reading number of pages containing the message """
@@ -1609,7 +1618,7 @@ class MT536Parser():
                                            qualifier_value='ESET'))
         self._read_transaction_details_date(lines)
 
-        while re.search(r':98[A-Z]:', lines[0][1]):  # mandatory repetitive field
+        while re.search(r':98[A-Z]:', lines[0][1]):  # optional repetitive field
             self._read_transaction_details_date(lines)
 
          # Movement Status Field (Optional)
@@ -1619,14 +1628,7 @@ class MT536Parser():
         # Narrative field (Optional)
         if re.match(r':70E:', lines[0][1]):
             result.update(self._read_narrative(lines))
-
-        # ignore fields until start of B1a2A block
-        # or end of TRANSDET BLOCK
-        while True:
-            if re.search(r':16R:SETPRTY', lines[0][1]) or re.search(r':16S:TRANSDET', lines[0][1]):
-                break
-            lines.pop(0)
-
+        
         self._read_blocks_b1a2a(lines)
 
         self._read_end_of_block(lines, 'TRANSDET')
@@ -1658,4 +1660,5 @@ class MT536Parser():
 ### Execute ###
 if __name__ == '__main__':
     PARSER = MT536Parser("in.txt", 1)
-    PARSER.parse()
+    (no_errors, result) = PARSER.parse()
+    print(pprint.pprint(result))
