@@ -39,6 +39,8 @@ def _build_err_msg(code, line, language, **kargs):
     elif code == 10:
         msg = (_ERROR_DICT[code][language]) % (
             line, kargs["field_name"], kargs["qualifier_value"])
+    elif code == 12:
+        msg = (_ERROR_DICT[code][language]) % kargs["isin"]
     else:
         msg = (_ERROR_DICT[0][language]) % (line)
     return msg
@@ -124,6 +126,10 @@ _ERROR_DICT = {
         0: "Error en la linea %s. Este campo solo acepta las siguientes opciones '%s'.",
         1: "Error at line %s. This fields only accepts one of the following options '%s'."
     },
+    12: {
+        0: "Error de validación del mensaje. El balance inicial y final no coincide con las transacciones asociadas al Intrumento Financiero de ISIN '%s'.",
+        1: "Message Validation Error. Initial and final balance don't match with the transactions movements of the FIN with ISIN '%s'."
+    }
 }
 
 ### Defined REGEXs ###
@@ -258,6 +264,7 @@ class MT536Parser():
             result.update(self._parse_block_a(_mt536))
             result.update(self._parse_blocks_b(_mt536))
             self._read_blocks_c(_mt536)
+            self._rules_validate(result)
         except ParsingError as error:
             no_errors = False
             msg = error.__str__()
@@ -273,6 +280,25 @@ class MT536Parser():
         # print("Remaining:\n%s"%_mt536)
         # print("Result:")
         
+    def _rules_validate(self, result):
+        # for every Financial Instrument, its final balance must
+        # be equal to its inicial balance + sum of transactions movements
+        for sub_account in result['accounts']:
+            for fin in sub_account['financial_instruments']:
+                # asks if balances are available (in MT536 those fields are optional)
+                if fin['opening_balance'] and fin['closing_balance']:
+                    acc = 0.0
+                    for trx in fin['transactions']:
+                        if trx['details']['rede'] == 'RECE':
+                            acc += trx['details']['quantity_fi'][0]['quantity']
+                        else:
+                            acc -= trx['details']['quantity_fi'][0]['quantity']
+                    if ("%.2f" % (fin['opening_balance']['balance']+acc)) != ("%.2f" % (fin['closing_balance']['balance'])):
+                        raise ParsingError(_build_err_msg(12, None, self._language, isin=fin['isin']['code']))
+
+
+
+
 
     def _read_page_number_indicator(self, lines):
         """ Reading number of pages containing the message """
@@ -895,18 +921,18 @@ class MT536Parser():
             tag, rest = mtch.group('tag'), mtch.group('rest')
             is_isin_present, is_description_present = False, False
             if tag == ':35B:':
-                mtch = re.match('^ISIN(?P<idisin>.+$)', rest)
+                mtch = re.match('^ISIN(?P<idisin>.+)$', rest)
                 if mtch:  # check ISIN Code (if exists)
                     is_isin_present = True
                     idisin = mtch.group('idisin')
                     mtch1 = re.match('^\s%s$' % alphanum_fixed(12), idisin)
                     if mtch1:
-                        result['isin'].update({"code": idisin})
+                        result['isin'].update({"code": idisin[1:]})
                         lines.pop(0)
                         (num_line, rest) = lines[0]
                     else:
                         raise ParsingError(_build_err_msg(8, num_line, self._language,
-                                                       field_name=field_name, subfield_name="ISIN", pattern="[ISIN1!e12!c][4*35x]"))
+                                                       field_name=field_name, subfield_name="ISIN", pattern="[ISIN 12!c][4*35x]"))
 
                 # Check for description (if exists)
                 if not is_swift_field_format_valid(rest) and is_setx(rest, 35):
@@ -1200,6 +1226,7 @@ class MT536Parser():
 
     def _read_transaction_details_date(self, lines):
         """ Read Transaction Details Indicator  (Mandatory Field)"""
+        result = {}
         (num_line, field) = lines[0]
         field_name = "Transaction Detail Date"
         tag_number = '98'
@@ -1210,18 +1237,17 @@ class MT536Parser():
             tag_num, opt, rest = mtch.group('tag')[1:3], mtch.group('tag')[
                 3], mtch.group('rest')
             if tag_num == tag_number:
-
                 if opt == 'A':
                     regex = "^(?P<qualifier>%s)//%s$" % (alphanum_fixed(4), R_FDATE)
                     mtch1 = re.match(regex, rest)
 
                     if mtch1:
                         if not is_correct_date(mtch1.group('date')):
-                            raise ParsingError(_build_err_msg(8, num_line, self._language,
+                            raise ParsingErroror(_build_err_msg(8, num_line, self._language,
                                                            field_name=field_name, subfield_name="date",
                                                            pattern="YYYYMMDD"))
                         else:
-
+                            result = {"date": mtch1.group('date'), "option":"A"}
                             lines.pop(0)  # all ok
 
                     else:  # subfields format not correct
@@ -1252,6 +1278,8 @@ class MT536Parser():
                         elif not is_correct_time(mtch1.group('time')):
                             raise ParsingError(_build_err_msg(8, num_line, self._language,
                                                            field_name=field_name, subfield_name="time", pattern="HHMMSS"))
+
+                        result = {"date": mtch1.group('date'), "time": mtch1.group('time'), "option":"C"}
                         lines.pop(0)  # all ok
 
                     else:  # subfields format not correct
@@ -1268,6 +1296,8 @@ class MT536Parser():
 
         else:  # not a valid swift's field format
             raise ParsingError(_build_err_msg(0, num_line, self._language))
+
+        return result
 
     def _read_transaction_details_party(self, lines):
         """ Read Transaction Details Party  (Mandatory Field)"""
@@ -1613,10 +1643,10 @@ class MT536Parser():
             self._read_indicator2(lines)
 
         # Date time fields (Mandatory Repetitive)
-        if not re.search(r':98[A-B]::ESET/', lines[0][1]):
+        if not re.search(r':98[A-C]::ESET/', lines[0][1]):
             raise ParsingError(_build_err_msg(10, lines[0][0], self._language, field_name='DATE/TIME',
                                            qualifier_value='ESET'))
-        self._read_transaction_details_date(lines)
+        result.update({"eset": self._read_transaction_details_date(lines)})
 
         while re.search(r':98[A-Z]:', lines[0][1]):  # optional repetitive field
             self._read_transaction_details_date(lines)
