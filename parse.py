@@ -15,7 +15,7 @@ class ParsingError(Exception):
 
 
 def _build_err_msg(code, line, language, **kargs):
-    if code in [0, 5]:
+    if code in [0, 5, 13, 14]:
         msg = (_ERROR_DICT[code][language]) % (line)
     elif code in [1, 11]:
         msg = (_ERROR_DICT[code][language]) % (line, kargs["tag"])
@@ -129,6 +129,14 @@ _ERROR_DICT = {
     12: {
         0: "Error de validación del mensaje. El balance inicial y final no coincide con las transacciones asociadas al Intrumento Financiero de ISIN '%s'.",
         1: "Message Validation Error. Initial and final balance don't match with the transactions movements of the FIN with ISIN '%s'."
+    },
+    13: {
+        0: "Error en la linea %s. La cabecera del mensaje no contiene el formato apropiado.",
+        1: "Error at line %s. Message's Header doesn't contain the correct format."
+    },
+    14: {
+        0: "Error en la linea %s. El pie de página del mensaje no contiene el formato apropiado.",
+        1: "Error at line %s. Message's Footer doesn't contain the correct format."
     }
 }
 
@@ -188,6 +196,10 @@ def fsetx(size):
     """ Return a Regex for R_FSET_X of length equal or less to a given size """
     return r'((?!.*//.*)(?!/)%s{1,%s}(?<!/))' % (R_FSET_X, size)
 
+def fsetx_free(size):
+    """ Return a Regex for R_FSET_X of length equal or less to a given size """
+    return r'%s{1,%s}' % (R_FSET_X, size)
+
 ### Format Verifications routines ###
 
 
@@ -238,6 +250,11 @@ def is_setx(word, size):
     with a length less or equal to a given size """
     return re.match(fsetx(size), word)
 
+def is_setx_free(word, size):
+    """ Given a word and a size value, Returns True if the word belongs to set x
+    with a length less or equal to a given size """
+    return re.match(fsetx_free(size), word)
+
 _IS_EOF = lambda lines: len(lines) == 0
 
 
@@ -252,6 +269,11 @@ class MT536Parser():
     def parse(self):
         """ Run the parser """
         no_errors = True
+        current_page = 0
+        # structure where all relevant info of ALL messages found in this file 
+        # will be stored 
+        list_results = [] 
+         # structure where all relevant info of ONE message will be stored
         # build the file path
         with open(self._path, 'r') as _file:
             # get message line by line
@@ -260,11 +282,32 @@ class MT536Parser():
             _mt536 = [(x[0], x[1].strip("\n ")) for x in list(
                 enumerate(_file.readlines(), start=1)) if len(x[1]) > 1]
         try:
-            result = {} # structure where all relevant info will be stored
-            result.update(self._parse_block_a(_mt536))
-            result.update(self._parse_blocks_b(_mt536))
-            self._read_blocks_c(_mt536)
-            self._rules_validate(result)
+            while True:
+                result = {}
+                self._parse_header(_mt536)
+                while True:
+                    page = {} # structure where all relevant info of the current page will be stored
+                    page.update(self._parse_block_a(_mt536))
+                    acti_flag = page['general']['acti']
+                    if acti_flag == 'N': # if message without transactions updates during the given period
+                        result = page
+                        break
+                    else:
+                        current_page, indicator = page['general']['continuation']['page'], page['general']['continuation']['indicator']
+                        page.update(self._parse_blocks_b(_mt536))
+                        self._read_blocks_c(_mt536)
+                        self._rules_validate(page)
+                        if int(current_page) == 1: # if it's the first page then we just copy the structure
+                            result = page
+                        else: # otherwise, we concatenate transactions with the ones of the pages we already read
+                            result['accounts'][0]['financial_instruments'] += page['accounts'][0]['financial_instruments']
+                        if indicator in ['LAST', 'ONLY']:
+                            break
+                continua = self._parse_footer(_mt536)
+                list_results.append(result)
+                if not continua:
+                    break # No mas mensajes en el archivo
+
         except ParsingError as error:
             no_errors = False
             msg = error.__str__()
@@ -273,20 +316,21 @@ class MT536Parser():
             msg = "Error de sintaxis. Fin inesperado del mensaje."
 
         if no_errors:
-            return (True, result)
+            return (True, list_results)
         else:
             return (False, msg)
 
         # print("Remaining:\n%s"%_mt536)
         # print("Result:")
-        
+
+    ### Copiar DESDE AQUI al Codigo fuente de Matcher!!!!
     def _rules_validate(self, result):
         # for every Financial Instrument, its final balance must
         # be equal to its inicial balance + sum of transactions movements
         for sub_account in result['accounts']:
             for fin in sub_account['financial_instruments']:
                 # asks if balances are available (in MT536 those fields are optional)
-                if fin['opening_balance'] and fin['closing_balance']:
+                if 'opening_balance' in fin and 'closing_balance' in fin:
                     acc = 0.0
                     for trx in fin['transactions']:
                         if trx['details']['rede'] == 'RECE':
@@ -297,11 +341,35 @@ class MT536Parser():
                         raise ParsingError(_build_err_msg(12, None, self._language, isin=fin['isin']['code']))
 
 
+    def _parse_header(self, lines):
+        """ Parse message header """
+        (num_line, line) = lines[0]
+        header_pattern =r"^\{1:[A-Z0-9]{25}\}\{4:(\{\d+:\d+\})+\}\{1:[A-Z0-9]{25}\}\{2:[A-Z0-9]+\}\{4:$"
+        if not re.match(header_pattern, line):
+            raise ParsingError(_build_err_msg(13, num_line, self._language))
+        lines.pop(0)
+
+    def _parse_footer(self, lines):
+        (num_line, line) = lines[0]
+        # tanto footer como header de un nuevo mensaje me puede llegar en una misma linea
+        header_pattern =r"^-\}\{5:(\{%s:%s\})+\}\{S:(\{%s:[A-Z0-9]*\})+\}(?P<cont>\$)?(?P<rest>[^$]*)" % (R_FSET_ALPHA, R_FSET_ALPHANUM, R_FSET_ALPHA)
+        mtch = re.match(header_pattern, line)
+        if not mtch:
+            raise ParsingError(_build_err_msg(14, num_line, self._language))
+        if mtch.group('cont'): # si queda al menos otro mensaje en el archivo
+            header = (lines[0][0], mtch.group('rest')) # creo una nueva linea con el header
+            lines.pop(0) # borro la linea leida
+            lines.insert(0, header) # inserto la linea con el header, será leida proximamente
+            return True
+        else:
+            lines.pop(0)
+            return False
 
 
 
     def _read_page_number_indicator(self, lines):
         """ Reading number of pages containing the message """
+        result = {}
         (num_line, field) = lines[0]
         mtch = re.match(r'^(%s)(%s)/(%s)$' %
                         (R_TAG_P, num(5), alphanum_fixed(4)), field)
@@ -312,9 +380,11 @@ class MT536Parser():
             elif mtch.group(3) not in ['LAST', 'MORE', 'ONLY']:
                 raise ParsingError(_build_err_msg(
                     3, num_line, self._language, value='\'LAST\', \'MORE\' or \'ONLY\''))
+            result = {"indicator": mtch.group(3), "page": mtch.group(2)}
             lines.pop(0)
         else:
             raise ParsingError(_build_err_msg(0, num_line, self._language))
+        return {"continuation": result}
 
     def _read_statement_number(self, lines):
         """ Statement number parsing """
@@ -660,6 +730,38 @@ class MT536Parser():
             raise ParsingError(_build_err_msg(0, num_line, self._language))
         return result
 
+    def _read_reference_b1a1(self, lines):
+        """ Read Reference of Link """
+        result = ""
+        field_name = "Reference Link"
+        (num_line, field) = lines[0]
+        pattern = ("^(?P<tag>%s):(?P<qualifier>%s)/"
+                   "/(?P<ref>.*)$") % (R_TAG_P, R_FSET_ALPHANUM)
+        mtch = re.match(pattern, field)
+        if mtch is not None:
+            (tag, qualifier, ref) = (mtch.group('tag'),
+                                     mtch.group('qualifier'), mtch.group('ref'))
+            if tag == ":20C:":
+                QUALIFIERS = ['PREV', 'RELA', 'POOL', 'TRRF', 'COMM', 'ASRF', 'CORP', 'TCTR',
+                              'CLTR', 'CLCI', 'TRCI', 'MITI', 'PCTI']
+                if qualifier in QUALIFIERS:
+                    if is_setx(ref, 16):
+                        if qualifier == 'RELA':
+                            result = ref
+                        lines.pop(0)
+                    else:
+                        raise ParsingError(_build_err_msg(
+                            5, num_line, self._language))
+                else:
+                    raise ParsingError(_build_err_msg(4, num_line, self._language,
+                                                   field_name=field_name, value=", ".join(QUALIFIERS)))
+            else:
+                raise ParsingError(_build_err_msg(
+                    1, num_line, self._language, tag=':20C:'))
+        else:
+            raise ParsingError(_build_err_msg(0, num_line, self._language))
+        return result
+
     def _read_account_owner(self, lines):
         """ Read the number of the Owner's Account (Optional Field)"""
         result = {}
@@ -719,6 +821,7 @@ class MT536Parser():
     def _read_flags_block_a(self, lines):
         """ Read Block A Flags (Mandatory Field) """
         field_name = "Flag"
+        result = {}
         # get ACTI flag first
         (num_line, field) = lines[0]
         mtch = re.match(r'^(?P<tag>%s):ACTI//(?P<flag>%s)$' %
@@ -731,6 +834,7 @@ class MT536Parser():
             elif mtch.group('flag') not in ['Y', 'N']:
                 raise ParsingError(_build_err_msg(6, num_line, self._language,
                                                subfield_name="flag", value="Y or N"))
+            result.update({"acti": mtch.group('flag')}) # store acti flag
             lines.pop(0)
             # now get CONS flag
             (num_line, field) = lines[0]
@@ -751,6 +855,7 @@ class MT536Parser():
         else:
             raise ParsingError(_build_err_msg(
                 10, num_line, self._language, field_name=field_name, qualifier_value="ACTI"))
+        return result
 
     def _read_start_of_block(self, lines, code):
         """ Start of block B """
@@ -935,20 +1040,20 @@ class MT536Parser():
                                                        field_name=field_name, subfield_name="ISIN", pattern="[ISIN 12!c][4*35x]"))
 
                 # Check for description (if exists)
-                if not is_swift_field_format_valid(rest) and is_setx(rest, 35):
+                if not is_swift_field_format_valid(rest) and is_setx_free(rest, 35):
                     is_description_present = True
                     result['isin'].update({"description": rest})
                     lines.pop(0)
                     (num_line, field) = lines[0]
-                    if not is_swift_field_format_valid(field) and is_setx(field, 35):
+                    if not is_swift_field_format_valid(field) and is_setx_free(field, 35):
                         result['isin']["description"] += " " + field
                         lines.pop(0)
                         (num_line, field) = lines[0]
-                        if not is_swift_field_format_valid(field) and is_setx(field, 35):
+                        if not is_swift_field_format_valid(field) and is_setx_free(field, 35):
                             result['isin']["description"] += " " + field
                             lines.pop(0)
                             (num_line, field) = lines[0]
-                            if not is_swift_field_format_valid(field) and is_setx(field, 35):
+                            if not is_swift_field_format_valid(field) and is_setx_free(field, 35):
                                 result['isin']["description"] += " " + field
                                 lines.pop(0)
 
@@ -974,7 +1079,7 @@ class MT536Parser():
         options = ['A', 'B']
         qualifiers = ['INDC', 'MRKT']
         valid_tags = list(map(lambda x: ':%s%s:' % (tag_number, x), options))
-        mtch = re.match('^(?P<tag>%s):(?P<rest>.+)$' % (R_TAG_P), field)
+        mtch = re.match('^(?P<tag>%s):?(?P<rest>.+)$' % (R_TAG_P), field)
         if mtch:
             tag_num, opt, rest = mtch.group('tag')[1:3], mtch.group('tag')[3], mtch.group('rest')
             if tag_num == tag_number:
@@ -1045,6 +1150,7 @@ class MT536Parser():
                 pass  # optional Field
 
         else:  # not a valid swift's field format
+
             raise ParsingError(_build_err_msg(0, num_line, self._language))
 
     def _read_price_quotation_date(self, lines):
@@ -1226,7 +1332,7 @@ class MT536Parser():
 
     def _read_transaction_details_date(self, lines):
         """ Read Transaction Details Indicator  (Mandatory Field)"""
-        result = {}
+        result = ""
         (num_line, field) = lines[0]
         field_name = "Transaction Detail Date"
         tag_number = '98'
@@ -1247,7 +1353,7 @@ class MT536Parser():
                                                            field_name=field_name, subfield_name="date",
                                                            pattern="YYYYMMDD"))
                         else:
-                            result = {"date": mtch1.group('date'), "option":"A"}
+                            result = mtch1.group('date')
                             lines.pop(0)  # all ok
 
                     else:  # subfields format not correct
@@ -1279,7 +1385,7 @@ class MT536Parser():
                             raise ParsingError(_build_err_msg(8, num_line, self._language,
                                                            field_name=field_name, subfield_name="time", pattern="HHMMSS"))
 
-                        result = {"date": mtch1.group('date'), "time": mtch1.group('time'), "option":"C"}
+                        result = mtch1.group('date')+mtch1.group('time')
                         lines.pop(0)  # all ok
 
                     else:  # subfields format not correct
@@ -1501,7 +1607,7 @@ class MT536Parser():
         """ Swift's MT536 message BlockA parsing """
         result = {}
         self._read_start_of_block(lines, 'GENL')
-        self._read_page_number_indicator(lines)
+        result.update(self._read_page_number_indicator(lines))
         self._read_statement_number(lines)
         result.update(self._read_seme(lines))
         self._read_message_function(lines)
@@ -1511,7 +1617,7 @@ class MT536Parser():
         self._read_blocks_a1(lines)
         result.update(self._read_account_owner(lines))
         self._read_safe_account(lines)
-        self._read_flags_block_a(lines)
+        result.update(self._read_flags_block_a(lines))
         self._read_end_of_block(lines, 'GENL')
         return {"general": result}
 
@@ -1559,11 +1665,14 @@ class MT536Parser():
     def _parse_block_b1(self, lines):
         result = {}
         self._read_start_of_block(lines, 'FIN')
+
         result.update(self._read_isin(lines))
+
         result.update(self._read_price(lines))
 
         self._read_price_source(lines)
         self._read_price_quotation_date(lines)
+
         result.update(self._read_balance(lines))
         result.update(self._read_balance(lines))
         result.update(self._parse_blocks_b1a(lines))
@@ -1584,17 +1693,17 @@ class MT536Parser():
         return {"transactions": result_out}
 
     def _parse_blocks_b1a1(self, lines):
-        result_out = []
+        result = ""
         while True:
-            result_in = {}
             self._read_start_of_block(lines, 'LINK')
             self._read_linked_message(lines)
-            result_in.update(self._read_reference_a1(lines))
+            ref = self._read_reference_b1a1(lines)
+            if ref != "":
+                result = ref 
             self._read_end_of_block(lines, 'LINK')
-            result_out.append(result_in)
             if re.match(r':16R:LINK', lines[0][1]) is None:
                 break
-        return {"linkages": result_out}
+        return {"rela": result}
 
     def _parse_block_b1a2(self, lines):
         """ Parsing Transaction Details Block """
@@ -1680,7 +1789,7 @@ class MT536Parser():
 
     def _read_blocks_c(self, lines):
         """ Parse Additional Information """
-        while not _IS_EOF(lines) and re.match(r':16[A-W]:', lines[0][1]):
+        while not _IS_EOF(lines) and re.match(r':16R:ADDINFO', lines[0][1]):
             self._read_start_of_block(lines, 'ADDINFO')
             while not re.match(r':16[A-W]:', lines[0][1]):
                 lines.pop(0)  # just ignore the block
@@ -1689,6 +1798,6 @@ class MT536Parser():
 
 ### Execute ###
 if __name__ == '__main__':
-    PARSER = MT536Parser("in.txt", 1)
+    PARSER = MT536Parser("in3.txt", 1)
     (no_errors, result) = PARSER.parse()
     print(pprint.pprint(result))
