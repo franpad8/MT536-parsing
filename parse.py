@@ -813,12 +813,14 @@ class MT536Parser():
 
     def _read_safe_account(self, lines):
         """ Read the number of the Safekeeping Acoount (Mandatory Field) """
+        result = {}
         field_name = "Account: Safekeeping Account"
         (num_line, field) = lines[0]
         if ":97A:" in field[0:5]:  # option P
             mtch = re.match('^(%s):SAFE\/\/(?P<code>%s)$' %
                             (R_TAG_P, fsetx(35)), field)
             if not mtch is None:
+                result = {"safe_account": mtch.group('code')}
                 lines.pop(0)
             else:
                 raise ParsingError(_build_err_msg(7, num_line, self._language,
@@ -827,6 +829,7 @@ class MT536Parser():
             mtch = re.match('^(%s):SAFE\/(?P<dss>%s)?\/(?P<type>%s)\/(?P<code>%s)$' % (R_TAG_P, alphanum(8),
                                                                                        alphanum_fixed(4), fsetx(35)), field)
             if not mtch is None:
+                result = {"safe_account": mtch.group('code')}
                 lines.pop(0)
             else:
                 raise ParsingError(_build_err_msg(7, num_line, self._language,
@@ -834,6 +837,7 @@ class MT536Parser():
         else:
             raise ParsingError(_build_err_msg(
                 1, num_line, self._language, tag=':97a:'))
+        return result
 
     def _read_flags_block_a(self, lines):
         """ Read Block A Flags (Mandatory Field) """
@@ -1633,7 +1637,7 @@ class MT536Parser():
         result.update(self._read_indicator1(lines))
         self._read_blocks_a1(lines)
         result.update(self._read_account_owner(lines))
-        self._read_safe_account(lines)
+        result.update(self._read_safe_account(lines))
         result.update(self._read_flags_block_a(lines))
         self._read_end_of_block(lines, 'GENL')
         return {"general": result}
