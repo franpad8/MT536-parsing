@@ -153,6 +153,14 @@ R_FTIME1 = r'(?P<time1>(?P<hour1>\d{2})(?P<min1>\d{2})(?P<sec1>\d{2}))'
 R_FDECIMAL_UTC = r'(,(?P<decimals>\d{1,3}))?(/(?P<sign>N)?(?P<utch>\d{2}(?P<utcm>\d{2})?))?'
 R_FCORRECT_DATE = r'\d{4}(0[1-9]|1[0-2])([0-2][1-9]|3[0-1])'
 R_FCORRECT_TIME = r'([0-1][0-9]|2[0-3])([0-5][0-9])([0-5][0-9])'
+R_HEADER_BLOCK_1_21 = r'\{1:[FAL]21[A-Z0-9]{12}\d{4}\d{6}\}'
+R_HEADER_BLOCK_1_01 = r'\{1:[FAL]01[A-Z0-9]{12}\d{4}\d{6}\}'
+R_HEADER_BLOCK_2 = r'\{2:O(?P<msg_type>\d{3})\d{4}[A-Z0-9]{28}\d{6}\d{4}[SNU]\}'
+R_HEADER_BLOCK_3 = r'\{3:\{113:\w*\}\{108:\w*\}\}'
+R_HEADER_BLOCK_4_21 = r'\{4:\{177:\w*\}\{451:\w*\}\}'
+R_TRAILER_BLOCK_5 = r'\{5:\{MAC:\w+\}\{CHK:\w+\}\}'
+R_TRAILER_BLOCK_S = r'\{S:\{SAC:\w*\}\{COP:\w+\}\}'
+
 
 ### Auxiliar functions ###
 
@@ -283,28 +291,34 @@ class MT536Parser():
                 enumerate(_file.readlines(), start=1)) if len(x[1]) > 1]
         try:
             while True:
-                result = {}
                 self._parse_header(_mt536)
-                while True:
-                    page = {} # structure where all relevant info of the current page will be stored
-                    page.update(self._parse_block_a(_mt536))
-                    acti_flag = page['general']['acti']
-                    if acti_flag == 'N': # if message without transactions updates during the given period
-                        result = page
-                        break
-                    else:
-                        current_page, indicator = page['general']['continuation']['page'], page['general']['continuation']['indicator']
-                        page.update(self._parse_blocks_b(_mt536))
-                        self._read_blocks_c(_mt536)
-                        self._rules_validate(page)
-                        if int(current_page) == 1: # if it's the first page then we just copy the structure
-                            result = page
-                        else: # otherwise, we concatenate transactions with the ones of the pages we already read
-                            result['accounts'][0]['financial_instruments'] += page['accounts'][0]['financial_instruments']
-                        if indicator in ['LAST', 'ONLY']:
-                            break
+                continuation_found = False
+                page = {} # structure where all relevant info of the current page will be stored
+                page.update(self._parse_block_a(_mt536))
+                acti_flag = page['general']['acti']
+                if acti_flag == 'N': # if message without transactions updates during the given period
+                    pass
+        
+                else:
+                    current_page, indicator = page['general']['continuation']['page'], page['general']['continuation']['indicator']
+                    page.update(self._parse_blocks_b(_mt536))
+
+                    self._read_blocks_c(_mt536)
+                    self._rules_validate(page)
+                    if int(current_page) == 1: # if it's the first page then we just copy the structure
+                        pass    
+                    # otherwise, we concatenate transactions with the ones of the pages we already read    
+                    else: 
+                        # We have to search the message with the same reference and then concatenate the page's trxs
+                        for result in list_results: 
+                            if result['general']['seme'] == page['general']['seme']:
+                                result['fins'] += page['fins']
+                                continuation_found = True
+                                break
+
                 continua = self._parse_footer(_mt536)
-                list_results.append(result)
+                if not continuation_found:
+                    list_results.append(page)
                 if not continua:
                     break # No mas mensajes en el archivo
 
@@ -327,24 +341,25 @@ class MT536Parser():
     def _rules_validate(self, result):
         # for every Financial Instrument, its final balance must
         # be equal to its inicial balance + sum of transactions movements
-        for sub_account in result['accounts']:
-            for fin in sub_account['financial_instruments']:
-                # asks if balances are available (in MT536 those fields are optional)
-                if 'opening_balance' in fin and 'closing_balance' in fin:
-                    acc = 0.0
-                    for trx in fin['transactions']:
-                        if trx['details']['rede'] == 'RECE':
-                            acc += trx['details']['quantity_fi'][0]['quantity']
-                        else:
-                            acc -= trx['details']['quantity_fi'][0]['quantity']
-                    if ("%.2f" % (fin['opening_balance']['balance']+acc)) != ("%.2f" % (fin['closing_balance']['balance'])):
-                        raise ParsingError(_build_err_msg(12, None, self._language, isin=fin['isin']['code']))
+        for fin in result['fins']:
+            # asks if balances are available (in MT536 those fields are optional)
+            if 'opening_balance' in fin and 'closing_balance' in fin:
+                acc = 0.0
+                for trx in fin['transactions']:
+                    if trx['details']['rede'] == 'RECE':
+                        acc += trx['details']['quantity_fi'][0]['quantity']
+                    else:
+                        acc -= trx['details']['quantity_fi'][0]['quantity']
+                if ("%.2f" % (fin['opening_balance']['balance']+acc)) != ("%.2f" % (fin['closing_balance']['balance'])):
+                    raise ParsingError(_build_err_msg(12, None, self._language, isin=fin['isin']['code']))
 
 
     def _parse_header(self, lines):
         """ Parse message header """
         (num_line, line) = lines[0]
-        header_pattern =r"^\{1:[A-Z0-9]{25}\}\{4:(\{\d+:\d+\})+\}\{1:[A-Z0-9]{25}\}\{2:[A-Z0-9]+\}\{4:$"
+        header_pattern = r'^(%s%s)*%s%s(%s)?\{4:$' % (R_HEADER_BLOCK_1_21, R_HEADER_BLOCK_4_21, 
+                                          R_HEADER_BLOCK_1_01, R_HEADER_BLOCK_2,
+                                          R_HEADER_BLOCK_3)
         if not re.match(header_pattern, line):
             raise ParsingError(_build_err_msg(13, num_line, self._language))
         lines.pop(0)
@@ -352,10 +367,12 @@ class MT536Parser():
     def _parse_footer(self, lines):
         (num_line, line) = lines[0]
         # tanto footer como header de un nuevo mensaje me puede llegar en una misma linea
-        header_pattern =r"^-\}\{5:(\{%s:%s\})+\}\{S:(\{%s:[A-Z0-9]*\})+\}(?P<cont>\$)?(?P<rest>[^$]*)" % (R_FSET_ALPHA, R_FSET_ALPHANUM, R_FSET_ALPHA)
-        mtch = re.match(header_pattern, line)
+        footer_pattern =r"^-\}%s(%s)?(?P<cont>\$)?(?P<rest>[^$]*)" % (R_TRAILER_BLOCK_5, R_TRAILER_BLOCK_S)
+        
+        mtch = re.match(footer_pattern, line)
         if not mtch:
             raise ParsingError(_build_err_msg(14, num_line, self._language))
+
         if mtch.group('cont'): # si queda al menos otro mensaje en el archivo
             header = (lines[0][0], mtch.group('rest')) # creo una nueva linea con el header
             lines.pop(0) # borro la linea leida
@@ -1639,8 +1656,9 @@ class MT536Parser():
         result = []
         while not _IS_EOF(lines) and not re.match(r':16R:SUBSAFE', lines[0][1]) is None:
             # parse block b and append info to list
-            result.append(self._parse_block_b(lines))
-        return {"accounts": result}
+            result += self._parse_block_b(lines)
+
+        return {"fins": result}
 
     def _parse_block_b(self, lines):
         """ Swift's MT536 message BlocksB parsing """
@@ -1650,7 +1668,7 @@ class MT536Parser():
         self._read_safe_account_block_b(lines)
         self._read_place_of_safekeeping(lines)
         self._read_activity_flag(lines)
-        result.update(self._parse_blocks_b1(lines))
+        result = self._parse_blocks_b1(lines)
         self._read_end_of_block(lines, 'SUBSAFE')
         return result
 
@@ -1660,7 +1678,7 @@ class MT536Parser():
         result = []
         while not re.match(r':16R:FIN', lines[0][1]) is None:
             result.append(self._parse_block_b1(lines))
-        return {"financial_instruments": result}
+        return result
 
     def _parse_block_b1(self, lines):
         result = {}
