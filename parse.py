@@ -41,6 +41,8 @@ def _build_err_msg(code, line, language, **kargs):
             line, kargs["field_name"], kargs["qualifier_value"])
     elif code == 12:
         msg = (_ERROR_DICT[code][language]) % kargs["isin"]
+    elif code == 15:
+        msg = (_ERROR_DICT[code][language]) % (line, kargs["field_name"], kargs["tag"])
     else:
         msg = (_ERROR_DICT[0][language]) % (line)
     return msg
@@ -137,6 +139,12 @@ _ERROR_DICT = {
     14: {
         0: "Error en la linea %s. El pie de página del mensaje no contiene el formato apropiado.",
         1: "Error at line %s. Message's Footer doesn't contain the correct format."
+    },
+    15: {
+        0: ("Error de sintaxis en la linea %s. "
+            "Se esperaba un campo '%s' de etiqueta '%s'."),
+        1: ("Sintax Error in line %s. "
+            " A '%s' field with tag '%s' was expected.")
     }
 }
 
@@ -274,13 +282,22 @@ class MT536Parser():
         self._language = lang
         self._path = path
 
+    def print_msg(self, seme):
+        with open(self._path, 'r') as file:
+            string = file.read()
+            file.close()
+            string.replace('\n', '¬')
+            mtch = re.findall(r'\{4:\n(.+?:20C::SEME//%s.+?)-\}' % seme, string, re.DOTALL)
+            print(mtch)
+
+
     def parse(self):
         """ Run the parser """
         no_errors = True
         current_page = 0
-        # structure where all relevant info of ALL messages found in this file 
-        # will be stored 
-        list_results = [] 
+        # structure where all relevant info of ALL messages found in this file
+        # will be stored
+        list_results = []
          # structure where all relevant info of ONE message will be stored
         # build the file path
         with open(self._path, 'r') as _file:
@@ -590,74 +607,67 @@ class MT536Parser():
         pattern = ("^(?P<tag>%s):(?P<qualifier>%s)/"
                    "(?P<dss>%s)?/(?P<indicator>%s)$") % (R_TAG_P, R_FSET_ALPHANUM, R_FSET_ALPHANUM, R_FSET_ALPHANUM)
         mtch = re.match(pattern, field)
-        if mtch is not None:
-            (tag, qualifier, dss, indicator) = (mtch.group('tag'), mtch.group('qualifier'), mtch.group('dss'),
-                                                mtch.group('indicator'))
+        
+        is_sfre, is_stba, is_code = False, False, False
 
-            if qualifier not in ['SFRE', 'CODE', 'STBA']:  # Check qualifiers
+        if not mtch:
+            raise ParsingError(_build_err_msg(0, num_line, self._language))
+       
+        (tag, qualifier, dss, indicator) = (mtch.group('tag'), mtch.group('qualifier'), mtch.group('dss'),
+                                            mtch.group('indicator'))
+        if  tag != ':22F:':
+            raise ParsingError(_build_err_msg(
+                               1, num_line, self._language, tag=':22F:'))
+
+        while tag == ':22F:':
+            
+            if qualifier == 'SFRE':
+                is_sfre = True
+                indicator_values = ['ADHO', 'DAIL',
+                                    'INDA', 'MNTH', 'WEEK', 'YEAR']
+                if dss is None and indicator not in indicator_values:
+                    raise ParsingError(_build_err_msg(9, num_line, self._language, field_name=field_name,
+                                                      qualifier_value=qualifier, subfield_name="indicator",
+                                                      subfield_value=",".join(indicator_values)))
+                # Store Frequency
+                result["frequency"] = indicator
+                lines.pop(0)
+
+            elif qualifier == 'CODE':
+                is_code = True
+                indicator_values = ['COMP', 'DELT']
+                if dss is None and indicator not in indicator_values:
+                    raise ParsingError(_build_err_msg(9, num_line, self._language, field_name=field_name,
+                                                      qualifier_value=qualifier, subfield_name="indicator",
+                                                      subfield_value=",".join(indicator_values)))
+                lines.pop(0)
+
+            elif qualifier == 'STBA':
+                is_stba = True
+                indicator_values = ['SETT', 'TRAD']
+                if dss is None and indicator not in indicator_values:
+                    raise ParsingError(_build_err_msg(9, num_line, self._language, field_name=field_name,
+                                                      qualifier_value=qualifier, subfield_name="indicator",
+                                                      subfield_value=",".join(indicator_values)))
+                lines.pop(0)
+
+            else: # Qualifier not valid
                 raise ParsingError(_build_err_msg(4, num_line, self._language, field_name=field_name,
                                                value="'CODE','SFRE','STBA'"))
 
-            if tag == ':22F:':
-                if qualifier == 'SFRE':  # optional
-                    indicator_values = ['ADHO', 'DAIL',
-                                        'INDA', 'MNTH', 'WEEK', 'YEAR']
-                    if dss is None and indicator not in indicator_values:
-                        raise ParsingError(_build_err_msg(9, num_line, self._language, field_name=field_name,
-                                                       qualifier_value=qualifier, subfield_name="indicator",
-                                                       subfield_value=",".join(indicator_values)))
-                    else:
-                        
-                        # store Frequency
-                        result["frequency"] = indicator
-                        lines.pop(0)
-                        # advance the line until mandatory 22F field with qualifier STBA
-                        (num_line, field) = lines[0]
-                        if '22F' in field:
-                            mtch = re.match(pattern, field)
-                            (tag, qualifier, dss, indicator) = (mtch.group('tag'), mtch.group('qualifier'), mtch.group('dss'),
-                                                                mtch.group('indicator'))
-                        else:
-                            raise ParsingError(_build_err_msg(10, num_line, self._language, field_name=field_name,
-                                                           qualifier_value='STBA'))
+            (num_line, field) = lines[0]
+            mtch = re.match(pattern, field)
+            if not mtch:
+                break
+            tag, qualifier, dss, indicator = (mtch.group('tag'), mtch.group('qualifier'), mtch.group('dss'),
+                                                mtch.group('indicator'))
+            
 
-                if qualifier == 'CODE':  # optional
-                    indicator_values = ['COMP', 'DELT']
-                    if dss is None and indicator not in indicator_values:
-                        raise ParsingError(_build_err_msg(9, num_line, self._language, field_name=field_name,
-                                                       qualifier_value=qualifier, subfield_name="indicator",
-                                                       subfield_value=",".join(indicator_values)))
-                    else:
-                        # advance the line until mandatory 22F field with qualifier
-                        # STBA
-                        lines.pop(0)
-                        (num_line, field) = lines[0]
-                        if '22F' in field:
-                            mtch = re.match(pattern, field)
-                            (tag, qualifier, dss, indicator) = (mtch.group('tag'), mtch.group('qualifier'), mtch.group('dss'),
-                                                                mtch.group('indicator'))
-                        else:
-                            raise ParsingError(_build_err_msg(10, num_line, self._language, field_name=field_name,
-                                                           qualifier_value='STBA'))
 
-                if qualifier == 'STBA':  # This field with this qualifier is mandatory
-                    indicator_values = ['SETT', 'TRAD']
-                    if dss is None and indicator not in indicator_values:
-                        raise ParsingError(_build_err_msg(9, num_line, self._language, field_name=field_name,
-                                                       qualifier_value=qualifier, subfield_name="indicator",
-                                                       subfield_value=",".join(indicator_values)))
-                    else:
-                        lines.pop(0)
-                else:
-                    raise ParsingError(_build_err_msg(10, num_line, self._language, field_name=field_name,
+
+        if not is_stba:
+            raise ParsingError(_build_err_msg(10, num_line, self._language, field_name=field_name,
                                                    qualifier_value='STBA'))
-
-            else:
-                raise ParsingError(_build_err_msg(
-                    1, num_line, self._language, tag=':22F:'))
-
-        else:
-            raise ParsingError(_build_err_msg(0, num_line, self._language))
 
         return result
 
@@ -845,37 +855,49 @@ class MT536Parser():
         result = {}
         # get ACTI flag first
         (num_line, field) = lines[0]
-        mtch = re.match(r'^(?P<tag>%s):ACTI//(?P<flag>%s)$' %
-                        (R_TAG_P, alpha_fixed(1)), field)
+        pattern = r'^(?P<tag>%s):(?P<qualifier>[A-Z]+)//(?P<flag>%s)$' % (R_TAG_P, alpha_fixed(1))
+        mtch = re.match(pattern, field)
 
-        if not mtch is None:
-            if mtch.group('tag') != ':17B:':  # check tag code
-                raise ParsingError(_build_err_msg(
-                    1, num_line, self._language, tag=':17B:'))
-            elif mtch.group('flag') not in ['Y', 'N']:
-                raise ParsingError(_build_err_msg(6, num_line, self._language,
-                                               subfield_name="flag", value="Y or N"))
-            result.update({"acti": mtch.group('flag')}) # store acti flag
-            lines.pop(0)
-            # now get CONS flag
-            (num_line, field) = lines[0]
-            mtch = re.match(r'^(?P<tag>%s):CONS//(?P<flag>%s)$' %
-                            (R_TAG_P, alpha_fixed(1)), field)
-            if not mtch is None:
-                if mtch.group('tag') != ':17B:':  # check tag code
-                    raise ParsingError(
-                        _build_err_msg(1, num_line, self._language, tag=':17B:'))
-                elif mtch.group('flag') not in ['Y', 'N']:
-                    raise ParsingError(_build_err_msg(
-                        6, num_line, self._language, subfield_name="flag", value="Y, N"))
-                else:
+        is_acti, is_cons = False, False
+        for _ in range(2):
+            if mtch:
+                (tag, qualifier, flag) = (mtch.group('tag'), mtch.group('qualifier'),
+                                          mtch.group('flag'))
+                if tag != ':17B:':  # check tag code
+                    raise ParsingError(_build_err_msg(1, num_line, self._language,
+                                                      tag=':17B:'))
+                if qualifier == 'ACTI':
+                    if flag not in ['Y', 'N']:
+                        raise ParsingError(_build_err_msg(6, num_line, self._language,
+                                                          subfield_name="flag", value="Y or N"))
+                    result.update({"acti": mtch.group('flag')}) # store acti flag
+                    is_acti = True
                     lines.pop(0)
+
+
+                elif qualifier == 'CONS':
+                    if flag not in ['Y', 'N']:
+                        raise ParsingError(_build_err_msg(6, num_line, self._language,
+                                                          subfield_name="flag", value="Y or N"))
+                    is_cons = True
+                    lines.pop(0)
+
+                else: # Qualifier not valid
+                    raise ParsingError(_build_err_msg(4, num_line, self._language,
+                                                      field_name=field_name, value="'ACTI','CONS'"))
             else:
-                raise ParsingError(_build_err_msg(
-                    10, num_line, self._language, field_name=field_name, qualifier_value="CONS"))
-        else:
-            raise ParsingError(_build_err_msg(
-                10, num_line, self._language, field_name=field_name, qualifier_value="ACTI"))
+                raise ParsingError(_build_err_msg(15, num_line, self._language, field_name="Flag", tag="17B"))
+
+            (num_line, field) = lines[0]
+            mtch = re.match(pattern, field)
+
+        if not is_acti:
+            raise ParsingError(_build_err_msg(10, num_line, self._language, field_name=field_name,
+                                                   qualifier_value='ACTI'))
+        if not is_cons:
+            raise ParsingError(_build_err_msg(10, num_line, self._language, field_name=field_name,
+                                                   qualifier_value='CONS'))
+
         return result
 
     def _read_start_of_block(self, lines, code):
@@ -1755,23 +1777,32 @@ class MT536Parser():
         if re.search(r':19A::ACRU/', lines[0][1]):
             self._read_amount(lines)
 
+
         # Indicator repetitive fields (Mandatories)
-        if not re.search(r':22F::TRAN/', lines[0][1]):
-            raise ParsingError(_build_err_msg(
-                10, lines[0][0], self._language, field_name='Indicator', qualifier_value='TRAN'))
-        self._read_indicator2(lines)
-        if not re.search(r':22H::REDE/', lines[0][1]):
+        is_tran, is_rede, is_paym = False, False, False
+        while re.search(r':22[A-Z]:', lines[0][1]):  # mandatory repetitive field
+            if re.search(r':22F::TRAN/', lines[0][1]):
+                self._read_indicator2(lines)
+                is_tran = True
+            elif re.search(r':22H::REDE/', lines[0][1]):
+                # store receive/deliver mode
+                result.update({"rede": self._read_indicator2(lines)})
+                is_rede = True
+            elif re.search(r':22H::PAYM/', lines[0][1]):
+                self._read_indicator2(lines)
+                is_paym = True
+            else:
+                self._read_indicator2(lines)
+
+        if not is_tran:
+            raise ParsingError(_build_err_msg(10, lines[0][0], self._language, field_name='Indicator',
+                                              qualifier_value='TRAN'))
+        if not is_rede:
             raise ParsingError(_build_err_msg(10, lines[0][0], self._language, field_name="Indicator",
                                            qualifier_value='REDE'))
-        # store receive/deliver mode
-        result.update({"rede": self._read_indicator2(lines)})
-
-        if not re.search(r':22H::PAYM/', lines[0][1]):
+        if not is_paym:
             raise ParsingError(_build_err_msg(10, lines[0][0], self._language, field_name="Indicator",
                                            qualifier_value='PAYM'))
-        self._read_indicator2(lines)
-        while re.search(r':22[A-Z]:', lines[0][1]):  # mandatory repetitive field
-            self._read_indicator2(lines)
 
         # Date time fields (Mandatory Repetitive)
         if not re.search(r':98[A-C]::ESET/', lines[0][1]):
@@ -1822,4 +1853,6 @@ class MT536Parser():
 if __name__ == '__main__':
     PARSER = MT536Parser("in3.txt", 1)
     (no_errors, result) = PARSER.parse()
-    print(pprint.pprint(result))
+    #print(pprint.pprint(result))
+    print("msg:")
+    PARSER.print_msg('TRANS161')
