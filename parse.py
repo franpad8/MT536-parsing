@@ -284,12 +284,25 @@ class MT536Parser():
 
     def print_msg(self, seme):
         with open(self._path, 'r') as file:
+            list_msgs = []
             string = file.read()
             file.close()
             string.replace('\n', '¬')
-            mtch = re.findall(r'\{4:\n(.+?:20C::SEME//%s.+?)-\}' % seme, string, re.DOTALL)
-            print(mtch)
+            mtchs = re.findall(r'\{4:\n(.+?:20C::SEME//%s.+?)-\}' % seme, string, re.DOTALL)
+            for mtch in mtchs:
+                general = re.search(".*(:16R:GENL\n.*:16S:GENL\n)", mtch, re.DOTALL).group(1)
+                general_1 = re.search(r'(.+?)(:16R:LINK\n.+:16S:LINK\n)(.+)', general, re.DOTALL)
+                if general_1:
+                    general_part_1 = general_1.group(1).replace('\n', '<br>')
+                    general_linkages = re.findall(':16R:LINK.+?:16S:LINK', general_1.group(2), re.DOTALL)
+                    general_linkages = [lk.replace('\n', '<br>') for lk in general_linkages]
+                    general_part_2 = general_1.group(3).replace('\n', '<br>')
+                    msg = {"general": {"part_1": general_part_1, "linkages": general_linkages, "part_2": general_part_2}}
+                else:
+                    msg = {"general": general.replace('\n', '<br>')}
+                list_msgs.append(msg)
 
+            return list_msgs
 
     def parse(self):
         """ Run the parser """
@@ -589,7 +602,7 @@ class MT536Parser():
                         lines.pop(0)
                 else:
                     raise ParsingError(_build_err_msg(
-                        7, num_line, self._language, field_name=field_name, option="B", pattern="	:4!c//8!n6!n/8!n6!n"))
+                        7, num_line, self._language, field_name=field_name, option="B", pattern="   :4!c//8!n6!n/8!n6!n"))
 
             else:
                 raise ParsingError(_build_err_msg(
