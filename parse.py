@@ -287,11 +287,12 @@ class MT536Parser():
             list_msgs = []
             string = file.read()
             file.close()
-            string.replace('\n', '¬')
             mtchs = re.findall(r'\{4:\n(.+?:20C::SEME//%s.+?)-\}' % seme, string, re.DOTALL)
             for mtch in mtchs:
-                general = re.search(".*(:16R:GENL\n.*:16S:GENL\n)", mtch, re.DOTALL).group(1)
-                general_1 = re.search(r'(.+?)(:16R:LINK\n.+:16S:LINK\n)(.+)', general, re.DOTALL)
+                # General Block
+                general = re.search(".*(:16R:GENL\n.*:16S:GENL\n)(.*)", mtch, re.DOTALL)
+                rest = general.group(2)
+                general_1 = re.search(r'(.+?)(:16R:LINK\n.+:16S:LINK\n)(.+)', general.group(1), re.DOTALL)
                 if general_1:
                     general_part_1 = general_1.group(1).replace('\n', '<br>')
                     general_linkages = re.findall(':16R:LINK.+?:16S:LINK', general_1.group(2), re.DOTALL)
@@ -299,8 +300,62 @@ class MT536Parser():
                     general_part_2 = general_1.group(3).replace('\n', '<br>')
                     msg = {"general": {"part_1": general_part_1, "linkages": general_linkages, "part_2": general_part_2}}
                 else:
-                    msg = {"general": general.replace('\n', '<br>')}
+                    msg = {"general": general.group(1).replace('\n', '<br>')}
+
+                # SubsafeBlocks
+                subs = re.findall(r'(:16R:SUBSAFE\n.*:16S:SUBSAFE\n)', rest, re.DOTALL)
+                if len(subs) > 0:
+                    for i in range(len(subs)):
+                        subs[i] = subs[i].replace('\n', '<br>')
+                        subs_1 = re.search(r'(.+?)(:16R:FIN.+:16S:FIN)(.+)', subs[i], re.DOTALL)
+                        if subs_1: # contains al least one fin block
+                            subsafe_part_1 = subs_1.group(1)
+                            if subs_1.group(2):
+                                subsafe_fins = re.findall(r':16R:FIN.+?:16S:FIN', subs_1.group(2), re.DOTALL)
+                            else:
+                                subsafe_fins = []
+                            # FIN BLOCK
+                            for j in range(len(subsafe_fins)):
+                                fin_1 = re.search(r'(.+?)(:16R:TRAN<br>.+:16S:TRAN<br>)(.+)', subsafe_fins[j], re.DOTALL)
+                                fin_part_1 = fin_1.group(1)
+                                fin_trans = re.findall(':16R:TRAN<br>.+?:16S:TRAN<br>', fin_1.group(2), re.DOTALL)
+                                for k in range(len(fin_trans)):
+
+                                    tran_1 = re.search(r'(.+?)(:16R:TRANSDET<br>.+:16S:TRANSDET<br>)(.+)', fin_trans[k], re.DOTALL)
+                                    if tran_1: # optional sequence
+                                        tran_part_1 = re.search(r"(.+?)(:16R:LINK.+:16S:LINK).+", tran_1.group(1), re.DOTALL)
+                                        tran_part_1_1 = tran_part_1.group(1)
+                                        tran_links = re.findall(r':16R:LINK.*?:16S:LINK', tran_part_1.group(2), re.DOTALL)
+                                        tran_details = tran_1.group(2)
+                                        tran_part_2 = tran_1.group(3)
+                                        fin_trans[k] = {"part_1": tran_part_1_1, "tran_links": tran_links,
+                                                        "tran_details": tran_details, "part_2": tran_part_2}
+                                    else:
+                                        tran_details = []
+                                        tran_part_1 = re.search(r"(.+?)(:16R:LINK.+:16S:LINK)(.+)", fin_trans[k],
+                                                                re.DOTALL)
+                                        tran_links = re.findall(r':16R:LINK.*?:16S:LINK', tran_part_1.group(2), re.DOTALL)
+                                        fin_trans[k] = {"part_1": tran_part_1.group(1), "tran_details": tran_details,
+                                                        "tran_links": tran_links, "part_2": tran_part_1.group(3)}
+
+                                fin_part_2 = fin_1.group(3)
+                                subsafe_fins[j] = {"part_1": fin_part_1, "trans": fin_trans, "part_2": fin_part_2}
+
+
+                            subsafe_part_2 = subs_1.group(3)
+                            subs[i] = {"part_1": subsafe_part_1, "fins": subsafe_fins, "part_2": subsafe_part_2}
+
+
+                    msg.update({'subsafes': subs})
+
+                addinfo = re.search(".*(:16R:ADDINFO\n.*:16S:ADDINFO\n).*", rest, re.DOTALL)
+                if addinfo:
+                    msg.update({'add_info': addinfo.group(1).replace('\n', '<br>')})
                 list_msgs.append(msg)
+
+                # Block B
+
+
 
             return list_msgs
 
@@ -1865,7 +1920,7 @@ class MT536Parser():
 ### Execute ###
 if __name__ == '__main__':
     PARSER = MT536Parser("in3.txt", 1)
-    (no_errors, result) = PARSER.parse()
+    no_errors, result = PARSER.parse()
     #print(pprint.pprint(result))
     print("msg:")
-    PARSER.print_msg('TRANS161')
+    print(pprint.pprint(PARSER.print_msg('TRANS161')))
