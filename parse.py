@@ -1023,7 +1023,7 @@ class MT536Parser():
         mtch = re.match('^(?P<tag>%s):(?P<rest>.*)$' % (R_TAG_P), field)
         if not mtch is None:
             # define formats for each option
-            opt_b = '(?P<qualifier>%s)\/(?P<dss>%s)?\/(?P<place>%s)(\/(?P<nar>%s))?' % (
+            opt_b = r'^(?P<qualifier>%s)\/(?P<dss>%s)?\/(?P<place>%s)(\/(?P<nar>%s))?$' % (
                 alphanum_fixed(4), alphanum(8), alphanum_fixed(4), fsetx(30))
             OPT_C = '(?P<qualifier>%s)\/\/(?P<country>%s)' % (alphanum_fixed(4),
                                                               alpha_fixed(2))
@@ -1921,6 +1921,6 @@ class MT536Parser():
 if __name__ == '__main__':
     PARSER = MT536Parser("in3.txt", 1)
     no_errors, result = PARSER.parse()
-    #print(pprint.pprint(result))
-    print("msg:")
-    print(pprint.pprint(PARSER.print_msg('TRANS161')))
+    print(pprint.pprint(result))
+    #print("msg:")
+    #print(pprint.pprint(PARSER.print_msg('TRANS161')))
