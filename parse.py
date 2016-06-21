@@ -74,7 +74,7 @@ _ERROR_DICT = {
         0: ("Error código T89 en la linea %s. "
             "El calificador del campo '%s' debe contener uno de los siguientes valores: %s."),
         1: ("Error code T89 at line %s. "
-            "'%s' Field Qualifier must contain one of the"
+            "'%s' Field Qualifier must contain one of the "
             "following codes: %s.")
     },
     5: {
@@ -152,7 +152,7 @@ _ERROR_DICT = {
 R_TAG_P = ':[0-9]{2}[A-Z]:'
 R_FSET_ALPHANUM = "[A-Z0-9]+"
 R_FSET_ALPHA = "[A-Z]+"
-R_FSET_X = r"[A-Za-z0-9/-?:(.,)'+]"
+R_FSET_X = r"[A-Za-z0-9/\-?: (.,)'+]"
 R_FSET_BIC = "[A-Z]{4}[A-Z]{2}[A-Z0-9]{2}([A-Z0-9]{3})?"
 R_FDATE = r'(?P<date>(?P<year>\d{4})(?P<month>\d{2})(?P<day>\d{2}))'
 R_FDATE1 = r'(?P<date1>(?P<year1>\d{4})(?P<month1>\d{2})(?P<day1>\d{2}))'
@@ -161,13 +161,7 @@ R_FTIME1 = r'(?P<time1>(?P<hour1>\d{2})(?P<min1>\d{2})(?P<sec1>\d{2}))'
 R_FDECIMAL_UTC = r'(,(?P<decimals>\d{1,3}))?(/(?P<sign>N)?(?P<utch>\d{2}(?P<utcm>\d{2})?))?'
 R_FCORRECT_DATE = r'\d{4}(0[1-9]|1[0-2])([0-2][1-9]|3[0-1])'
 R_FCORRECT_TIME = r'([0-1][0-9]|2[0-3])([0-5][0-9])([0-5][0-9])'
-R_HEADER_BLOCK_1_21 = r'\{1:[FAL]21[A-Z0-9]{12}\d{4}\d{6}\}'
-R_HEADER_BLOCK_1_01 = r'\{1:[FAL]01[A-Z0-9]{12}\d{4}\d{6}\}'
-R_HEADER_BLOCK_2 = r'\{2:O(?P<msg_type>\d{3})\d{4}[A-Z0-9]{28}\d{6}\d{4}[SNU]\}'
-R_HEADER_BLOCK_3 = r'\{3:\{113:\w*\}\{108:\w*\}\}'
-R_HEADER_BLOCK_4_21 = r'\{4:\{177:\w*\}\{451:\w*\}\}'
-R_TRAILER_BLOCK_5 = r'\{5:\{MAC:\w+\}\{CHK:\w+\}\}'
-R_TRAILER_BLOCK_S = r'\{S:\{SAC:\w*\}\{COP:\w+\}\}'
+
 
 
 ### Auxiliar functions ###
@@ -270,6 +264,17 @@ def is_setx_free(word, size):
     """ Given a word and a size value, Returns True if the word belongs to set x
     with a length less or equal to a given size """
     return re.match(fsetx_free(size), word)
+
+# Header regexs
+R_HEADER_BLOCK_1_21 = r'\{1:[FAL]21[A-Z0-9]{12}\d{4}\d{6}\}'
+R_HEADER_BLOCK_1_01 = r'\{1:[FAL]01(?P<sender>[A-Z0-9]{12})\d{4}\d{6}\}'
+### Solo Output mode porque se supone que los MT536 siempre llegan del corresponsal
+R_HEADER_BLOCK_2 = r'\{2:O(?P<msg_type>\d{3})\d{4}\d{6}(?P<receiver>[A-Z0-9]{12})[A-Z0-9]{10}\d{6}\d{4}([SNU])?\}'
+R_HEADER_BLOCK_3 = ("\{3:(\{103:[A-Z]{3}\})*(\{113:%s{4}\})*(\{108:%s\})*"
+                    "(\{119:%s\})*(\{115:%s\})*\}") % (R_FSET_X, fsetx_free(16), num(8), fsetx_free(32))
+R_HEADER_BLOCK_4_21 = r'\{4:\{177:\w*\}\{451:\w*\}\}'
+R_TRAILER_BLOCK_5 = r'\{5:\{MAC:\w+\}(\{CHK:\w+\})?\}'
+R_TRAILER_BLOCK_S = r'\{S:\{SAC:\w*\}\{COP:\w+\}\}'
 
 _IS_EOF = lambda lines: len(lines) == 0
 
@@ -376,9 +381,10 @@ class MT536Parser():
                 enumerate(_file.readlines(), start=1)) if len(x[1]) > 1]
         try:
             while True:
-                self._parse_header(_mt536)
+                
                 continuation_found = False
                 page = {} # structure where all relevant info of the current page will be stored
+                page.update(self._parse_header(_mt536))
                 page.update(self._parse_block_a(_mt536))
                 acti_flag = page['general']['acti']
                 if acti_flag == 'N': # if message without transactions updates during the given period
@@ -445,9 +451,11 @@ class MT536Parser():
         header_pattern = r'^(%s%s)*%s%s(%s)?\{4:$' % (R_HEADER_BLOCK_1_21, R_HEADER_BLOCK_4_21, 
                                           R_HEADER_BLOCK_1_01, R_HEADER_BLOCK_2,
                                           R_HEADER_BLOCK_3)
-        if not re.match(header_pattern, line):
+        mtch = re.match(header_pattern, line)
+        if not mtch:
             raise ParsingError(_build_err_msg(13, num_line, self._language))
         lines.pop(0)
+        return {"receiver": mtch.group("receiver"), "sender": mtch.group("sender")}
 
     def _parse_footer(self, lines):
         (num_line, line) = lines[0]
@@ -522,7 +530,7 @@ class MT536Parser():
             elif mtch.group(2) != 'SEME':
                 raise ParsingError(_build_err_msg(
                     4, num_line, self._language, field_name=field_name, value='\'SEME\''))
-            elif re.match(fsetx(16), mtch.group(3)) is None:
+            elif re.match(fsetx(16) + "$", mtch.group(3)) is None:
                 raise ParsingError(_build_err_msg(5, num_line, self._language))
             # add seme to structure
             result["seme"] = mtch.group(3)
@@ -543,9 +551,10 @@ class MT536Parser():
             if mtch.group(1) != ':23G:':
                 raise ParsingError(_build_err_msg(
                     1, num_line, self._language, tag=':23G:'))
-            elif mtch.group('function') not in ['CANC', 'NEWM']:
+                ### POR AHORA SOLO SE ADMITE EL MODO NEW MESSAGE
+            elif mtch.group('function') not in ['NEWM']:
                 raise ParsingError(_build_err_msg(
-                    4, num_line, self._language, field_name=field_name, value='\'CANC\',\'NEWM\''))
+                    4, num_line, self._language, field_name=field_name, value='\'NEWM\''))
             elif not mtch.group('subfunction') is None and mtch.group('subfunction') not in ['CODU', 'COPY', 'DUPL']:
                 raise ParsingError(_build_err_msg(6, num_line, self._language,
                                                   subfield_name="subfunction",
@@ -712,7 +721,7 @@ class MT536Parser():
 
             elif qualifier == 'STBA':
                 is_stba = True
-                indicator_values = ['SETT', 'TRAD']
+                indicator_values = ['SETT']
                 if dss is None and indicator not in indicator_values:
                     raise ParsingError(_build_err_msg(9, num_line, self._language, field_name=field_name,
                                                       qualifier_value=qualifier, subfield_name="indicator",
@@ -808,13 +817,12 @@ class MT536Parser():
                                      mtch.group('qualifier'), mtch.group('ref'))
             if tag == ":20C:":
                 if qualifier in ['PREV', 'RELA']:
-                    if is_setx(ref, 16):
-                        if qualifier == 'RELA':
-                            result['rela'] = ref
-                        lines.pop(0)
-                    else:
-                        raise ParsingError(_build_err_msg(
-                            5, num_line, self._language))
+                    if re.match(fsetx(16) + "$", ref) is None:
+                        raise ParsingError(_build_err_msg(5, num_line, self._language))
+                    if qualifier == 'RELA':
+                        result['rela'] = ref
+                    lines.pop(0)
+                    
                 else:
                     raise ParsingError(_build_err_msg(4, num_line, self._language,
                                                    field_name=field_name, value="'PREV', 'RELA'"))
@@ -840,13 +848,11 @@ class MT536Parser():
                 QUALIFIERS = ['PREV', 'RELA', 'POOL', 'TRRF', 'COMM', 'ASRF', 'CORP', 'TCTR',
                               'CLTR', 'CLCI', 'TRCI', 'MITI', 'PCTI']
                 if qualifier in QUALIFIERS:
-                    if is_setx(ref, 16):
-                        if qualifier == 'RELA':
-                            result = ref
-                        lines.pop(0)
-                    else:
-                        raise ParsingError(_build_err_msg(
-                            5, num_line, self._language))
+                    if re.match(fsetx(16) + "$", ref) is None:
+                        raise ParsingError(_build_err_msg(5, num_line, self._language))
+                    if qualifier == 'RELA':
+                        result = ref
+                    lines.pop(0)
                 else:
                     raise ParsingError(_build_err_msg(4, num_line, self._language,
                                                    field_name=field_name, value=", ".join(QUALIFIERS)))
@@ -897,8 +903,8 @@ class MT536Parser():
         if ":97A:" in field[0:5]:  # option P
             mtch = re.match('^(%s):SAFE\/\/(?P<code>%s)$' %
                             (R_TAG_P, fsetx(35)), field)
-            if not mtch is None:
-                result = {"safe_account": mtch.group('code')}
+            if mtch:
+                result = {"safe_account": {"code": mtch.group('code')}}
                 lines.pop(0)
             else:
                 raise ParsingError(_build_err_msg(7, num_line, self._language,
@@ -907,7 +913,10 @@ class MT536Parser():
             mtch = re.match('^(%s):SAFE\/(?P<dss>%s)?\/(?P<type>%s)\/(?P<code>%s)$' % (R_TAG_P, alphanum(8),
                                                                                        alphanum_fixed(4), fsetx(35)), field)
             if not mtch is None:
-                result = {"safe_account": mtch.group('code')}
+                dss = mtch.group('dss')
+                result = {"safe_account": {"code": mtch.group('code')}}
+                if dss:
+                    result['safe_account'].update({"dss": dss})
                 lines.pop(0)
             else:
                 raise ParsingError(_build_err_msg(7, num_line, self._language,
@@ -1872,14 +1881,27 @@ class MT536Parser():
             raise ParsingError(_build_err_msg(10, lines[0][0], self._language, field_name="Indicator",
                                            qualifier_value='PAYM'))
 
+        
         # Date time fields (Mandatory Repetitive)
-        if not re.search(r':98[A-C]::ESET/', lines[0][1]):
-            raise ParsingError(_build_err_msg(10, lines[0][0], self._language, field_name='DATE/TIME',
-                                           qualifier_value='ESET'))
-        result.update({"eset": self._read_transaction_details_date(lines)})
+        is_eset = False
+        while True:  # optional repetitive field
+            if re.search(r':98[A-C]::ESET/', lines[0][1]):
+                is_eset = True
+                result.update({"eset": self._read_transaction_details_date(lines)})
+            elif re.search(r':98[A-C]::TRAD/', lines[0][1]):
+                result.update({"trade_date": self._read_transaction_details_date(lines)})
+            elif re.search(r':98[A-C]::SETT/', lines[0][1]):
+                result.update({"sett_date": self._read_transaction_details_date(lines)})
+            else:
+                self._read_transaction_details_date(lines)
 
-        while re.search(r':98[A-Z]:', lines[0][1]):  # optional repetitive field
-            self._read_transaction_details_date(lines)
+            if not re.search(r':98[A-Z]:', lines[0][1]):
+                break
+
+        # ESET qualifier is mandatory in this field
+        if not is_eset:
+            raise ParsingError(_build_err_msg(10, lines[0][0], self._language,
+                                              field_name='DATE/TIME', qualifier_value='ESET'))
 
          # Movement Status Field (Optional)
         if re.match(r':25D:', lines[0][1]):
